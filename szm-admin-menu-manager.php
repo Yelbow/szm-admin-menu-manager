@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       SZM Admin Menu Manager
  * Description:       Shows only an allow-listed set of admin menu items for chosen roles (everything else is hidden by default), with per-item renaming/re-icon-ing and the option to nest items under a different submenu, plus a custom "Header & Footer" shortcut. Configurable per site under Settings → Admin Menu Manager.
- * Version:           2.1.0
+ * Version:           2.2.0
  * Requires at least: 5.9
  * Requires PHP:      7.4
  * Author:            Studio Zonder Meer
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 define( 'SZM_AMM_OPTION', 'szm_amm_settings' );
-define( 'SZM_AMM_VERSION', '2.1.0' );
+define( 'SZM_AMM_VERSION', '2.2.0' );
 
 /**
  * Seeds the "minimale_editor" role with a sensible default capability set on
