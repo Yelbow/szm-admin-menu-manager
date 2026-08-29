@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:       SZM Admin Menu Manager
- * Description:       Shows only an allow-listed set of admin menu items for chosen roles (everything else is hidden by default), plus a custom "Header & Footer" shortcut. Configurable per site under Settings → Admin Menu Manager.
- * Version:           2.0.0
+ * Description:       Shows only an allow-listed set of admin menu items for chosen roles (everything else is hidden by default), with per-item renaming/re-icon-ing and the option to nest items under a different submenu, plus a custom "Header & Footer" shortcut. Configurable per site under Settings → Admin Menu Manager.
+ * Version:           2.1.0
  * Requires at least: 5.9
  * Requires PHP:      7.4
  * Author:            Studio Zonder Meer
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 define( 'SZM_AMM_OPTION', 'szm_amm_settings' );
-define( 'SZM_AMM_VERSION', '2.0.0' );
+define( 'SZM_AMM_VERSION', '2.1.0' );
 
 /**
  * Self-updates through WordPress's native Plugins/Updates screen — no
@@ -60,6 +60,8 @@ function szm_amm_default_settings() {
 			'upload.php', // Media
 		),
 		'hidden_submenu_slugs'    => array(), // lines of "parent_slug|child_slug", pruned within an allowed parent
+		'menu_overrides'          => array(), // slug => array( 'title' => '', 'icon' => '' )
+		'menu_regroup'            => array(), // list of array( 'slug' => '', 'parent' => '', 'title' => '' )
 		'hide_patterns'           => true,
 		'add_header_footer_menu'  => true,
 		'enable_debug_panel'      => false,
@@ -69,6 +71,40 @@ function szm_amm_default_settings() {
 function szm_amm_get_settings() {
 	$saved = get_option( SZM_AMM_OPTION, array() );
 	return wp_parse_args( $saved, szm_amm_default_settings() );
+}
+
+/**
+ * Snapshot of the currently-registered top-level menu items (label => used
+ * for the settings-page pickers, slug => value). Only meaningful when read
+ * on an admin_menu-or-later hook, since $menu is built during that action.
+ * Reliable to call from the settings page render because that page is only
+ * reachable by an administrator, who this plugin never restricts — so
+ * $menu there is always the full, untouched set.
+ */
+function szm_amm_get_live_menu_items() {
+	global $menu;
+	$items = array();
+
+	if ( ! is_array( $menu ) ) {
+		return $items;
+	}
+
+	foreach ( $menu as $item ) {
+		$slug = $item[2] ?? '';
+		if ( '' === $slug ) {
+			continue;
+		}
+		if ( isset( $item[4] ) && false !== strpos( $item[4], 'wp-menu-separator' ) ) {
+			continue;
+		}
+		$label = trim( wp_strip_all_tags( $item[0] ?? '' ) );
+		if ( '' === $label ) {
+			continue;
+		}
+		$items[ $slug ] = $label;
+	}
+
+	return $items;
 }
 
 /**
@@ -92,10 +128,101 @@ function szm_amm_user_is_restricted( $user, $roles ) {
 }
 
 /**
- * Show only the allow-listed top-level menu items for restricted roles —
- * everything else registered by core/plugins/theme is removed. Runs late
- * (999) so every plugin has already registered its menu items by the time
- * we read $menu.
+ * Rename / re-icon a top-level menu item in place. Only touches the label
+ * and icon — slug, capability, and page callback are untouched, so the
+ * item still points at exactly what it always did.
+ */
+function szm_amm_apply_menu_overrides( array $overrides ) {
+	global $menu;
+
+	if ( empty( $overrides ) || ! is_array( $menu ) ) {
+		return;
+	}
+
+	foreach ( $menu as $key => $item ) {
+		$slug = $item[2] ?? '';
+		if ( '' === $slug || empty( $overrides[ $slug ] ) ) {
+			continue;
+		}
+		$override = $overrides[ $slug ];
+		if ( ! empty( $override['title'] ) ) {
+			$menu[ $key ][0] = $override['title'];
+		}
+		if ( ! empty( $override['icon'] ) && isset( $menu[ $key ][6] ) ) {
+			$menu[ $key ][6] = $override['icon'];
+		}
+	}
+}
+
+/**
+ * Move a top-level menu item so it appears as a submenu under a different
+ * parent instead. This is a presentation change, not a re-registration —
+ * we look up the original entry, remove it as a top-level item, and
+ * re-add it as a submenu pointing at the exact same slug/capability.
+ *
+ * For plugin pages that route through admin.php?page=..., WordPress fires
+ * the page's callback via an action hook name derived from the *parent*
+ * slug — moving the item changes that hook name, so without help the page
+ * would render blank. We detect that case and alias the new hook to the
+ * old one. Core pages that are real files (edit.php, upload.php, etc.)
+ * don't have this problem: they render themselves regardless of where
+ * they're nested in the menu.
+ *
+ * If the target slug isn't currently registered (e.g. its plugin is
+ * inactive), the rule is silently skipped rather than breaking the menu.
+ */
+function szm_amm_apply_menu_regroup( array $rules ) {
+	global $menu;
+
+	if ( empty( $rules ) || ! is_array( $menu ) ) {
+		return;
+	}
+
+	foreach ( $rules as $rule ) {
+		$slug   = $rule['slug'] ?? '';
+		$parent = $rule['parent'] ?? '';
+		$label  = $rule['title'] ?? '';
+
+		if ( '' === $slug || '' === $parent || $slug === $parent ) {
+			continue;
+		}
+
+		$found = null;
+		foreach ( $menu as $item ) {
+			if ( ( $item[2] ?? '' ) === $slug ) {
+				$found = $item;
+				break;
+			}
+		}
+		if ( ! $found ) {
+			continue; // Not currently registered — skip safely.
+		}
+
+		$menu_title = '' !== $label ? $label : trim( wp_strip_all_tags( $found[0] ) );
+		$page_title = $found[3] ?? $menu_title;
+		$capability = $found[1] ?? 'read';
+
+		$old_hook = get_plugin_page_hookname( $slug, '' );
+
+		remove_menu_page( $slug );
+		$new_hook = add_submenu_page( $parent, $page_title, $menu_title, $capability, $slug );
+
+		if ( $new_hook && $old_hook && $new_hook !== $old_hook
+			&& has_action( $old_hook ) && ! has_action( $new_hook ) ) {
+			add_action( $new_hook, static function () use ( $old_hook ) {
+				do_action( $old_hook );
+			} );
+		}
+	}
+}
+
+/**
+ * Apply renaming/re-icon-ing, regrouping into submenus, then the
+ * allow-list prune, for restricted roles — everything else registered by
+ * core/plugins/theme is removed. Runs late (999) so every plugin has
+ * already registered its menu items by the time we read $menu. Order
+ * matters: overrides and regroup run first so a regrouped item's new
+ * parent can itself be allow-listed and survive the prune below.
  */
 add_action( 'admin_menu', 'szm_amm_apply_menu_allowlist', 999 );
 function szm_amm_apply_menu_allowlist() {
@@ -108,7 +235,19 @@ function szm_amm_apply_menu_allowlist() {
 		return;
 	}
 
-	$allowed = array_merge( $settings['allowed_menu_slugs'], szm_amm_always_visible_slugs() );
+	szm_amm_apply_menu_overrides( $settings['menu_overrides'] );
+	szm_amm_apply_menu_regroup( $settings['menu_regroup'] );
+
+	// A regroup rule's parent must stay visible even if it wasn't
+	// explicitly allow-listed — otherwise the parent gets pruned below and
+	// orphans the item(s) just nested under it.
+	$regroup_parents = array_column( $settings['menu_regroup'], 'parent' );
+
+	$allowed = array_merge(
+		$settings['allowed_menu_slugs'],
+		szm_amm_always_visible_slugs(),
+		array_filter( $regroup_parents )
+	);
 
 	if ( is_array( $menu ) ) {
 		foreach ( $menu as $item ) {
@@ -251,8 +390,51 @@ function szm_amm_sanitize_settings( $input ) {
 		? array_values( array_intersect( $existing_roles, $input['roles'] ) )
 		: array();
 
-	$output['allowed_menu_slugs']   = szm_amm_textarea_to_lines( $input['allowed_menu_slugs'] ?? '' );
+	// Picked from checkboxes generated off the live menu, not typed —
+	// only slugs currently registered on the site can ever end up here.
+	$live_slugs                     = array_keys( szm_amm_get_live_menu_items() );
+	$output['allowed_menu_slugs']   = isset( $input['allowed_menu_slugs'] ) && is_array( $input['allowed_menu_slugs'] )
+		? array_values( array_intersect( $live_slugs, array_map( 'sanitize_text_field', $input['allowed_menu_slugs'] ) ) )
+		: array();
+
 	$output['hidden_submenu_slugs'] = szm_amm_textarea_to_lines( $input['hidden_submenu_slugs'] ?? '' );
+
+	$overrides = array();
+	if ( isset( $input['menu_overrides'] ) && is_array( $input['menu_overrides'] ) ) {
+		foreach ( $input['menu_overrides'] as $slug => $override ) {
+			$slug  = sanitize_text_field( $slug );
+			$title = isset( $override['title'] ) ? sanitize_text_field( $override['title'] ) : '';
+			$icon  = isset( $override['icon'] ) ? sanitize_text_field( $override['icon'] ) : '';
+			if ( in_array( $slug, $live_slugs, true ) && ( '' !== $title || '' !== $icon ) ) {
+				$overrides[ $slug ] = array(
+					'title' => $title,
+					'icon'  => $icon,
+				);
+			}
+		}
+	}
+	$output['menu_overrides'] = $overrides;
+
+	$regroup = array();
+	if ( isset( $input['menu_regroup'] ) && is_array( $input['menu_regroup'] ) ) {
+		foreach ( $input['menu_regroup'] as $row ) {
+			$slug   = isset( $row['slug'] ) ? sanitize_text_field( $row['slug'] ) : '';
+			$parent = isset( $row['parent'] ) ? sanitize_text_field( $row['parent'] ) : '';
+			$title  = isset( $row['title'] ) ? sanitize_text_field( $row['title'] ) : '';
+			if ( '' === $slug || '' === $parent || $slug === $parent ) {
+				continue;
+			}
+			if ( ! in_array( $slug, $live_slugs, true ) || ! in_array( $parent, $live_slugs, true ) ) {
+				continue;
+			}
+			$regroup[] = array(
+				'slug'   => $slug,
+				'parent' => $parent,
+				'title'  => $title,
+			);
+		}
+	}
+	$output['menu_regroup'] = $regroup;
 
 	$output['hide_patterns']         = ! empty( $input['hide_patterns'] );
 	$output['add_header_footer_menu'] = ! empty( $input['add_header_footer_menu'] );
@@ -299,11 +481,121 @@ function szm_amm_render_settings_page() {
 				<?php endforeach; ?>
 			</p>
 
-			<h2><?php esc_html_e( 'Menu slugs to allow', 'szm-amm' ); ?></h2>
-			<p class="description"><?php esc_html_e( 'One per line. Only these top-level menus stay visible (plus Dashboard and Profile, always). Same slug format as remove_menu_page() — e.g. edit.php, upload.php, edit.php?post_type=page, woocommerce.', 'szm-amm' ); ?></p>
-			<textarea name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[allowed_menu_slugs]" rows="10" cols="60" class="large-text code"><?php
-				echo esc_textarea( implode( "\n", $settings['allowed_menu_slugs'] ) );
-			?></textarea>
+			<?php $live_items = szm_amm_get_live_menu_items(); ?>
+
+			<h2><?php esc_html_e( 'Menu items to allow', 'szm-amm' ); ?></h2>
+			<p class="description"><?php esc_html_e( 'Picked from the top-level menu items currently registered on this site (plus Dashboard and Profile, always visible). Optionally give an item a custom label and/or icon — leave both blank to keep the original. Icon: a dashicons class (e.g. dashicons-admin-users) or an image URL.', 'szm-amm' ); ?></p>
+			<table class="widefat striped" style="max-width:900px;">
+				<thead>
+					<tr>
+						<th style="width:28px;"></th>
+						<th><?php esc_html_e( 'Menu item', 'szm-amm' ); ?></th>
+						<th><?php esc_html_e( 'Custom label', 'szm-amm' ); ?></th>
+						<th><?php esc_html_e( 'Custom icon', 'szm-amm' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $live_items as $slug => $label ) : ?>
+						<?php $override = $settings['menu_overrides'][ $slug ] ?? array(); ?>
+						<tr>
+							<td>
+								<input type="checkbox" name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[allowed_menu_slugs][]"
+									value="<?php echo esc_attr( $slug ); ?>"
+									<?php checked( in_array( $slug, $settings['allowed_menu_slugs'], true ) ); ?> />
+							</td>
+							<td><?php echo esc_html( $label ); ?> <code><?php echo esc_html( $slug ); ?></code></td>
+							<td>
+								<input type="text" class="regular-text"
+									name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[menu_overrides][<?php echo esc_attr( $slug ); ?>][title]"
+									value="<?php echo esc_attr( $override['title'] ?? '' ); ?>" placeholder="<?php echo esc_attr( $label ); ?>" />
+							</td>
+							<td>
+								<input type="text" class="regular-text"
+									name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[menu_overrides][<?php echo esc_attr( $slug ); ?>][icon]"
+									value="<?php echo esc_attr( $override['icon'] ?? '' ); ?>" placeholder="dashicons-admin-users" />
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+
+			<h2><?php esc_html_e( 'Group items under a submenu', 'szm-amm' ); ?></h2>
+			<p class="description"><?php esc_html_e( 'Move a top-level item so it appears as a submenu under a different item instead. The moved item does not need to be allow-listed above — nesting it here is what keeps it visible. Its new parent does need to stay visible (it is kept automatically even if not allow-listed above).', 'szm-amm' ); ?></p>
+			<table class="widefat striped" id="szm-amm-regroup-table" style="max-width:900px;">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'Item to move', 'szm-amm' ); ?></th>
+						<th><?php esc_html_e( 'New parent', 'szm-amm' ); ?></th>
+						<th><?php esc_html_e( 'Custom label (optional)', 'szm-amm' ); ?></th>
+						<th style="width:40px;"></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php
+					$regroup_rows = $settings['menu_regroup'];
+					$regroup_rows[] = array( 'slug' => '', 'parent' => '', 'title' => '' ); // one spare blank row
+					foreach ( $regroup_rows as $i => $row ) :
+					?>
+						<tr>
+							<td>
+								<select name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[menu_regroup][<?php echo (int) $i; ?>][slug]">
+									<option value=""></option>
+									<?php foreach ( $live_items as $slug => $label ) : ?>
+										<option value="<?php echo esc_attr( $slug ); ?>" <?php selected( $row['slug'], $slug ); ?>>
+											<?php echo esc_html( $label . ' (' . $slug . ')' ); ?>
+										</option>
+									<?php endforeach; ?>
+								</select>
+							</td>
+							<td>
+								<select name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[menu_regroup][<?php echo (int) $i; ?>][parent]">
+									<option value=""></option>
+									<?php foreach ( $live_items as $slug => $label ) : ?>
+										<option value="<?php echo esc_attr( $slug ); ?>" <?php selected( $row['parent'], $slug ); ?>>
+											<?php echo esc_html( $label . ' (' . $slug . ')' ); ?>
+										</option>
+									<?php endforeach; ?>
+								</select>
+							</td>
+							<td>
+								<input type="text" class="regular-text"
+									name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[menu_regroup][<?php echo (int) $i; ?>][title]"
+									value="<?php echo esc_attr( $row['title'] ); ?>" />
+							</td>
+							<td>
+								<button type="button" class="button szm-amm-remove-row">&times;</button>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+			<p><button type="button" class="button" id="szm-amm-add-row"><?php esc_html_e( '+ Add rule', 'szm-amm' ); ?></button></p>
+			<script>
+			(function () {
+				var table = document.getElementById( 'szm-amm-regroup-table' ).getElementsByTagName( 'tbody' )[0];
+				document.getElementById( 'szm-amm-add-row' ).addEventListener( 'click', function () {
+					var last  = table.rows[ table.rows.length - 1 ];
+					var clone = last.cloneNode( true );
+					var index = table.rows.length;
+					clone.querySelectorAll( '[name]' ).forEach( function ( el ) {
+						el.name  = el.name.replace( /\[menu_regroup\]\[\d+\]/, '[menu_regroup][' + index + ']' );
+						if ( 'SELECT' === el.tagName ) {
+							el.value = '';
+						} else if ( 'INPUT' === el.tagName ) {
+							el.value = '';
+						}
+					} );
+					table.appendChild( clone );
+				} );
+				table.addEventListener( 'click', function ( e ) {
+					if ( e.target.classList.contains( 'szm-amm-remove-row' ) ) {
+						if ( table.rows.length > 1 ) {
+							e.target.closest( 'tr' ).remove();
+						}
+					}
+				} );
+			})();
+			</script>
 
 			<h2><?php esc_html_e( 'Submenu slugs to hide within an allowed parent', 'szm-amm' ); ?></h2>
 			<p class="description"><?php esc_html_e( 'One per line, format: parent_slug|child_slug — same as remove_submenu_page(). Use this to prune inside a menu you\'ve allowed above. Example: woocommerce|wc-settings', 'szm-amm' ); ?></p>
