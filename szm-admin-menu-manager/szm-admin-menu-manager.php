@@ -23,8 +23,9 @@ define( 'SZM_AMM_VERSION', '2.0.0' );
  * for new tags and shows the normal "Update available" notice.
  */
 require_once __DIR__ . '/inc/plugin-update-checker/plugin-update-checker.php';
+use YahnisElsts\PluginUpdateChecker\v5p4\PucFactory;
 add_action( 'init', function () {
-	$update_checker = Puc_v5_Factory::buildUpdateChecker(
+	$update_checker = PucFactory::buildUpdateChecker(
 		'https://github.com/Yelbow/szm-admin-menu-manager',
 		__FILE__,
 		'szm-admin-menu-manager'
