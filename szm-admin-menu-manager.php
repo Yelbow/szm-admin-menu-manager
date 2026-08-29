@@ -18,6 +18,123 @@ define( 'SZM_AMM_OPTION', 'szm_amm_settings' );
 define( 'SZM_AMM_VERSION', '2.1.0' );
 
 /**
+ * Seeds the "minimale_editor" role with a sensible default capability set on
+ * activation — pulled verbatim from a real client site's User Role Editor
+ * config. Includes manage_options, edit_themes, edit_plugins, and
+ * update_core/plugins/themes deliberately (per client requirement) even
+ * though manage_options means szm_amm_user_is_restricted() treats this role
+ * as unrestricted — this plugin's menu allow-listing will NOT apply to
+ * minimale_editor users. That's an accepted tradeoff, not an oversight.
+ *
+ * Only runs if the role doesn't already exist, so it never overwrites
+ * customizations already made by hand (e.g. via User Role Editor) on a site
+ * that's been running this plugin for a while.
+ *
+ * Hooked twice on purpose:
+ * - register_activation_hook fires on a fresh install / manual
+ *   deactivate+reactivate.
+ * - admin_init fires on every admin page load, including after a normal
+ *   plugin update — updates replace the plugin files in place without
+ *   deactivating/reactivating, so the activation hook alone would silently
+ *   never run for a site that gets this feature via update rather than a
+ *   fresh install. get_role() is a cheap in-memory lookup, so the no-op
+ *   case (role already exists) costs nothing on every other page load.
+ */
+register_activation_hook( __FILE__, 'szm_amm_create_default_role' );
+add_action( 'admin_init', 'szm_amm_create_default_role' );
+function szm_amm_create_default_role() {
+	if ( get_role( 'minimale_editor' ) ) {
+		return;
+	}
+
+	$caps = array_fill_keys( array(
+		'read',
+		'edit_posts',
+		'create_posts',
+		'edit_others_posts',
+		'edit_private_posts',
+		'edit_published_posts',
+		'delete_posts',
+		'read_private_pages',
+		'edit_pages',
+		'edit_others_pages',
+		'edit_private_pages',
+		'edit_published_pages',
+		'delete_pages',
+		'edit_plugins',
+		'edit_theme_options',
+		'edit_themes',
+		'export',
+		'manage_options',
+		'unfiltered_html',
+		'update_core',
+		'update_plugins',
+		'update_themes',
+		'upload_files',
+		'view_site_health_checks',
+		// WooCommerce: products
+		'edit_product',
+		'edit_products',
+		'edit_others_products',
+		'edit_private_products',
+		'edit_published_products',
+		'read_product',
+		'read_private_products',
+		'publish_products',
+		'delete_product',
+		'delete_products',
+		'delete_others_products',
+		'delete_private_products',
+		'delete_published_products',
+		'assign_product_terms',
+		'edit_product_terms',
+		'delete_product_terms',
+		'manage_product_terms',
+		// WooCommerce: coupons
+		'edit_shop_coupon',
+		'edit_shop_coupons',
+		'edit_others_shop_coupons',
+		'edit_private_shop_coupons',
+		'edit_published_shop_coupons',
+		'read_shop_coupon',
+		'read_private_shop_coupons',
+		'publish_shop_coupons',
+		'delete_shop_coupon',
+		'delete_shop_coupons',
+		'delete_others_shop_coupons',
+		'delete_private_shop_coupons',
+		'delete_published_shop_coupons',
+		'assign_shop_coupon_terms',
+		'edit_shop_coupon_terms',
+		'delete_shop_coupon_terms',
+		'manage_shop_coupon_terms',
+		// WooCommerce: orders
+		'edit_shop_order',
+		'edit_shop_orders',
+		'edit_others_shop_orders',
+		'edit_private_shop_orders',
+		'edit_published_shop_orders',
+		'read_shop_order',
+		'read_private_shop_orders',
+		'publish_shop_orders',
+		'delete_shop_order',
+		'delete_shop_orders',
+		'delete_others_shop_orders',
+		'delete_private_shop_orders',
+		'delete_published_shop_orders',
+		'assign_shop_order_terms',
+		'edit_shop_order_terms',
+		'delete_shop_order_terms',
+		'manage_shop_order_terms',
+		// WooCommerce: reports/settings
+		'manage_woocommerce',
+		'view_woocommerce_reports',
+	), true );
+
+	add_role( 'minimale_editor', __( 'Minimale Editor', 'szm-amm' ), $caps );
+}
+
+/**
  * Self-updates through WordPress's native Plugins/Updates screen — no
  * separate updater plugin needed on client sites. Checks the GitHub repo
  * for new tags and shows the normal "Update available" notice.
@@ -35,6 +152,35 @@ add_action( 'init', function () {
 	// read-only-on-this-repo GitHub access token:
 	// $update_checker->setAuthentication( 'ghp_xxxxxxxxxxxxxxxxxxxx' );
 } );
+
+/**
+ * Prompts the admin to one-click install/activate User Role Editor
+ * (https://wordpress.org/plugins/user-role-editor/) — it's the tool used to
+ * hand-tune the minimale_editor role's capabilities after this plugin seeds
+ * the defaults. Not bundled directly: it stays updated through wordpress.org
+ * like any normal plugin instead of being frozen inside this zip. Shown as a
+ * recommendation, not a hard requirement, so this plugin still works without
+ * it — URE only adds the ability to edit roles/capabilities visually.
+ */
+require_once __DIR__ . '/inc/tgm-plugin-activation/class-tgm-plugin-activation.php';
+add_action( 'tgmpa_register', 'szm_amm_register_required_plugins' );
+function szm_amm_register_required_plugins() {
+	tgmpa(
+		array(
+			array(
+				'name'     => 'User Role Editor',
+				'slug'     => 'user-role-editor',
+				'required' => false,
+			),
+		),
+		array(
+			'id'           => 'szm-amm',
+			'menu'         => 'szm-amm-install-plugins',
+			'has_notices'  => true,
+			'is_automatic' => false,
+		)
+	);
+}
 
 /**
  * Top-level menu slugs that stay visible no matter what — without these,
