@@ -71,8 +71,21 @@ function szm_amm_get_settings() {
 	return wp_parse_args( $saved, szm_amm_default_settings() );
 }
 
+/**
+ * Administrators are never touched by this plugin — full stop. Even if
+ * 'administrator' somehow ends up in the saved roles list (e.g. a stray
+ * import), or a custom role carries manage_options, this plugin keeps its
+ * hands off. This check is intentionally not configurable from the
+ * settings UI.
+ */
 function szm_amm_user_is_restricted( $user, $roles ) {
 	if ( empty( $roles ) ) {
+		return false;
+	}
+	if ( in_array( 'administrator', (array) $user->roles, true ) ) {
+		return false;
+	}
+	if ( user_can( $user, 'manage_options' ) ) {
 		return false;
 	}
 	return (bool) array_intersect( $roles, (array) $user->roles );
@@ -232,7 +245,8 @@ function szm_amm_sanitize_settings( $input ) {
 	$defaults = szm_amm_default_settings();
 	$output   = array();
 
-	$existing_roles       = array_keys( wp_roles()->roles );
+	// 'administrator' can never be a restricted role — see szm_amm_user_is_restricted().
+	$existing_roles       = array_diff( array_keys( wp_roles()->roles ), array( 'administrator' ) );
 	$output['roles']      = isset( $input['roles'] ) && is_array( $input['roles'] )
 		? array_values( array_intersect( $existing_roles, $input['roles'] ) )
 		: array();
@@ -270,8 +284,12 @@ function szm_amm_render_settings_page() {
 			<?php settings_fields( 'szm_amm_settings_group' ); ?>
 
 			<h2><?php esc_html_e( 'Restricted roles', 'szm-amm' ); ?></h2>
+			<p class="description"><?php esc_html_e( 'Administrator is never listed here and can never be restricted by this plugin, by design.', 'szm-amm' ); ?></p>
 			<p>
 				<?php foreach ( wp_roles()->roles as $role_slug => $role ) : ?>
+					<?php if ( 'administrator' === $role_slug ) : ?>
+						<?php continue; ?>
+					<?php endif; ?>
 					<label style="display:inline-block; margin-right:16px;">
 						<input type="checkbox" name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[roles][]"
 							value="<?php echo esc_attr( $role_slug ); ?>"
