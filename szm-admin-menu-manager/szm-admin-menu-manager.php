@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:       SZM Admin Menu Manager
- * Description:       Hides admin menu items and patterns for chosen roles, and adds a custom "Header & Footer" shortcut. Configurable per site under Settings → Admin Menu Manager.
- * Version:           1.0.0
+ * Description:       Shows only an allow-listed set of admin menu items for chosen roles (everything else is hidden by default), plus a custom "Header & Footer" shortcut. Configurable per site under Settings → Admin Menu Manager.
+ * Version:           2.0.0
  * Requires at least: 5.9
  * Requires PHP:      7.4
  * Author:            Studio Zonder Meer
@@ -15,53 +15,53 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 define( 'SZM_AMM_OPTION', 'szm_amm_settings' );
-define( 'SZM_AMM_VERSION', '1.0.0' );
+define( 'SZM_AMM_VERSION', '2.0.0' );
 
 /**
- * Default settings — mirrors the original per-site hardcoded list, so installing
- * this plugin with no configuration reproduces the previous behaviour.
+ * Self-updates through WordPress's native Plugins/Updates screen — no
+ * separate updater plugin needed on client sites. Checks the GitHub repo
+ * for new tags and shows the normal "Update available" notice.
+ */
+require_once __DIR__ . '/inc/plugin-update-checker/plugin-update-checker.php';
+add_action( 'init', function () {
+	$update_checker = Puc_v5_Factory::buildUpdateChecker(
+		'https://github.com/Yelbow/szm-admin-menu-manager',
+		__FILE__,
+		'szm-admin-menu-manager'
+	);
+	$update_checker->setBranch( 'main' );
+	// If the repo is private, uncomment and set a fine-grained,
+	// read-only-on-this-repo GitHub access token:
+	// $update_checker->setAuthentication( 'ghp_xxxxxxxxxxxxxxxxxxxx' );
+} );
+
+/**
+ * Top-level menu slugs that stay visible no matter what — without these,
+ * restricted users can't reach their own profile or safely land anywhere
+ * after login.
+ */
+function szm_amm_always_visible_slugs() {
+	return array( 'index.php', 'profile.php' );
+}
+
+/**
+ * Default settings. The allow-list starts deliberately small — a client
+ * editor typically needs Posts/Pages/Media and whatever custom content
+ * type the site is built around. Fail-closed on purpose: a newly installed
+ * plugin's menu item stays hidden until someone explicitly allows it,
+ * instead of silently appearing (which is what a hide-list does).
  */
 function szm_amm_default_settings() {
 	return array(
-		'roles'            => array( 'minimale_editor', 'shop_manager' ),
-		'menu_slugs'       => array(
-			'tools.php',
-			'plugins.php',
-			'users.php',
-			'themes.php',
-			'twentig',
-			'edit.php?post_type=vermelding',
-			'options-general.php',
-			'edit.php',
-			'yith_plugin_panel',
-			'edit-comments.php',
-			'edit.php?post_type=elementor_library',
-			'wpcf7',
-			'envato-elements',
-			'vc-general',
-			'edit.php?post_type=vc_grid_item',
-			'vc-welcome',
-			'edit.php?post_type=portfolio',
-			'gf_edit_forms',
-			'edit.php?post_type=custom-css-js',
-			'cookie-law-info',
-			'age-gate',
-			'rank-math',
-			'brightplugins',
-			'aws-options',
-			'edit.php?post_type=acf-field-group',
-			'wpcode',
-			'edit.php?post_type=filter-set',
-			'mailchimp-for-wp',
-			'generateblocks',
-			'best4u-whatsapp-button-settings',
-			'w3tc_dashboard',
-			'pmxi-admin-home',
+		'roles'                   => array( 'minimale_editor', 'shop_manager' ),
+		'allowed_menu_slugs'      => array(
+			'edit.php',   // Posts
+			'upload.php', // Media
 		),
-		'submenu_slugs'    => array(), // lines of "parent_slug|child_slug"
-		'hide_patterns'    => true,
-		'add_header_footer_menu' => true,
-		'enable_debug_panel'     => false,
+		'hidden_submenu_slugs'    => array(), // lines of "parent_slug|child_slug", pruned within an allowed parent
+		'hide_patterns'           => true,
+		'add_header_footer_menu'  => true,
+		'enable_debug_panel'      => false,
 	);
 }
 
@@ -78,10 +78,15 @@ function szm_amm_user_is_restricted( $user, $roles ) {
 }
 
 /**
- * Hide top-level and sub-level admin menu items for the configured roles.
+ * Show only the allow-listed top-level menu items for restricted roles —
+ * everything else registered by core/plugins/theme is removed. Runs late
+ * (999) so every plugin has already registered its menu items by the time
+ * we read $menu.
  */
-add_action( 'admin_menu', 'szm_amm_hide_menu_items', 999 );
-function szm_amm_hide_menu_items() {
+add_action( 'admin_menu', 'szm_amm_apply_menu_allowlist', 999 );
+function szm_amm_apply_menu_allowlist() {
+	global $menu;
+
 	$settings = szm_amm_get_settings();
 	$user     = wp_get_current_user();
 
@@ -89,14 +94,20 @@ function szm_amm_hide_menu_items() {
 		return;
 	}
 
-	foreach ( $settings['menu_slugs'] as $slug ) {
-		$slug = trim( $slug );
-		if ( '' !== $slug ) {
-			remove_menu_page( $slug );
+	$allowed = array_merge( $settings['allowed_menu_slugs'], szm_amm_always_visible_slugs() );
+
+	if ( is_array( $menu ) ) {
+		foreach ( $menu as $item ) {
+			$slug = $item[2] ?? '';
+			if ( '' !== $slug && ! in_array( $slug, $allowed, true ) ) {
+				remove_menu_page( $slug );
+			}
 		}
 	}
 
-	foreach ( $settings['submenu_slugs'] as $pair ) {
+	// Within an allowed parent, individual sub-items can still be pruned —
+	// e.g. keep "WooCommerce" but hide "WooCommerce → Settings".
+	foreach ( $settings['hidden_submenu_slugs'] as $pair ) {
 		$parts = array_map( 'trim', explode( '|', $pair, 2 ) );
 		if ( 2 === count( $parts ) && '' !== $parts[0] && '' !== $parts[1] ) {
 			remove_submenu_page( $parts[0], $parts[1] );
@@ -225,8 +236,8 @@ function szm_amm_sanitize_settings( $input ) {
 		? array_values( array_intersect( $existing_roles, $input['roles'] ) )
 		: array();
 
-	$output['menu_slugs'] = szm_amm_textarea_to_lines( $input['menu_slugs'] ?? '' );
-	$output['submenu_slugs'] = szm_amm_textarea_to_lines( $input['submenu_slugs'] ?? '' );
+	$output['allowed_menu_slugs']   = szm_amm_textarea_to_lines( $input['allowed_menu_slugs'] ?? '' );
+	$output['hidden_submenu_slugs'] = szm_amm_textarea_to_lines( $input['hidden_submenu_slugs'] ?? '' );
 
 	$output['hide_patterns']         = ! empty( $input['hide_patterns'] );
 	$output['add_header_footer_menu'] = ! empty( $input['add_header_footer_menu'] );
@@ -252,7 +263,7 @@ function szm_amm_render_settings_page() {
 	?>
 	<div class="wrap">
 		<h1><?php esc_html_e( 'Admin Menu Manager', 'szm-amm' ); ?></h1>
-		<p><?php esc_html_e( 'Hides selected admin menu items and block patterns for the chosen roles. Slugs differ per plugin/theme combo, so review this list on every new site before relying on it.', 'szm-amm' ); ?></p>
+		<p><?php esc_html_e( 'For the chosen roles, ONLY the allow-listed menu items below stay visible — everything else registered by core, plugins, or the theme is hidden. Dashboard and Profile always stay visible. Slugs differ per plugin/theme combo, so check this list on every new site (open ?debug=1 below to see the current slugs) before relying on it.', 'szm-amm' ); ?></p>
 
 		<form method="post" action="options.php">
 			<?php settings_fields( 'szm_amm_settings_group' ); ?>
@@ -269,16 +280,16 @@ function szm_amm_render_settings_page() {
 				<?php endforeach; ?>
 			</p>
 
-			<h2><?php esc_html_e( 'Menu slugs to hide', 'szm-amm' ); ?></h2>
-			<p class="description"><?php esc_html_e( 'One per line. Same value you would pass to remove_menu_page().', 'szm-amm' ); ?></p>
-			<textarea name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[menu_slugs]" rows="16" cols="60" class="large-text code"><?php
-				echo esc_textarea( implode( "\n", $settings['menu_slugs'] ) );
+			<h2><?php esc_html_e( 'Menu slugs to allow', 'szm-amm' ); ?></h2>
+			<p class="description"><?php esc_html_e( 'One per line. Only these top-level menus stay visible (plus Dashboard and Profile, always). Same slug format as remove_menu_page() — e.g. edit.php, upload.php, edit.php?post_type=page, woocommerce.', 'szm-amm' ); ?></p>
+			<textarea name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[allowed_menu_slugs]" rows="10" cols="60" class="large-text code"><?php
+				echo esc_textarea( implode( "\n", $settings['allowed_menu_slugs'] ) );
 			?></textarea>
 
-			<h2><?php esc_html_e( 'Submenu slugs to hide', 'szm-amm' ); ?></h2>
-			<p class="description"><?php esc_html_e( 'One per line, format: parent_slug|child_slug — same as remove_submenu_page(). Example: woocommerce|wc-settings', 'szm-amm' ); ?></p>
-			<textarea name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[submenu_slugs]" rows="6" cols="60" class="large-text code"><?php
-				echo esc_textarea( implode( "\n", $settings['submenu_slugs'] ) );
+			<h2><?php esc_html_e( 'Submenu slugs to hide within an allowed parent', 'szm-amm' ); ?></h2>
+			<p class="description"><?php esc_html_e( 'One per line, format: parent_slug|child_slug — same as remove_submenu_page(). Use this to prune inside a menu you\'ve allowed above. Example: woocommerce|wc-settings', 'szm-amm' ); ?></p>
+			<textarea name="<?php echo esc_attr( SZM_AMM_OPTION ); ?>[hidden_submenu_slugs]" rows="6" cols="60" class="large-text code"><?php
+				echo esc_textarea( implode( "\n", $settings['hidden_submenu_slugs'] ) );
 			?></textarea>
 
 			<h2><?php esc_html_e( 'Other options', 'szm-amm' ); ?></h2>
