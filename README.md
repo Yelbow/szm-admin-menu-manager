@@ -21,12 +21,18 @@ submenu list.
 
 ## Install on a site
 
-1. Zip the `szm-admin-menu-manager/` folder (the one containing
-   `szm-admin-menu-manager.php` and the `inc/` folder).
-2. Upload via Plugins → Add New → Upload Plugin, or copy the folder to
-   `wp-content/plugins/`.
-3. Activate.
-4. Go to Settings → Admin Menu Manager, check the role list, and add the
+The repo root *is* the plugin — `szm-admin-menu-manager.php` and `inc/`
+live at the top level (required for the self-updater below to find the
+main file via the GitHub API; it looks at the repo root, not a
+subfolder).
+
+1. Download/clone this repo into `wp-content/plugins/szm-admin-menu-manager/`
+   (the folder name matters — it must match the plugin slug the updater
+   expects), or zip the repo contents into a folder named
+   `szm-admin-menu-manager` and upload via Plugins → Add New → Upload
+   Plugin.
+2. Activate.
+3. Go to Settings → Admin Menu Manager, check the role list, and add the
    menu slugs this site's editors actually need (Posts/Media are allowed
    by default — everything else is hidden until you add it). Turn on the
    debug panel option and visit `/wp-admin/?debug=1` (as an administrator)
